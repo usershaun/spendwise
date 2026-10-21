@@ -1,13 +1,36 @@
 import html as html_lib
 import re
+from pathlib import Path
 
 import pytest
+from html_helpers import form_state, parse, stats, table_rows
 
-from app import repository
+from app import repository, services
 
 
 def rows(conn):
     return repository.list_transactions(conn)
+
+
+def parse_links(element):
+    return {a.get("href"): a.text() for a in element.find_all("a")}
+
+
+def monthly_rows(page):
+    section = page.find("section", aria_labelledby="monthly-heading")
+    return table_rows(section.find("table"))
+
+
+def breakdown_items(page):
+    section = page.find("section", aria_labelledby="breakdown-heading")
+    return [
+        {
+            "category": li.find("a").text(),
+            "summary": li.find("span").text(),
+            "bar": li.find("div", cls="bar").find("span").get("style"),
+        }
+        for li in section.find_all("li")
+    ]
 
 
 # --- dashboard -------------------------------------------------------------
@@ -28,42 +51,58 @@ def test_dashboard_totals_come_from_the_database(client, add):
     add(amount_cents=123450, type="expense", category="Rent", date="2026-03-02")
     add(amount_cents=5, type="expense", category="Food", date="2026-03-03")
 
-    html = client.get("/").get_data(as_text=True)
+    page = parse(client.get("/").get_data(as_text=True))
 
-    assert "R5,000.00" in html  # income
-    assert "R1,234.55" in html  # expenses
-    assert "R3,765.45" in html  # net balance
-
-
-def test_dashboard_totals_change_when_data_changes(client, add):
-    add(amount_cents=100, type="income", category="Salary", date="2026-03-01")
-    first = client.get("/").get_data(as_text=True)
-    add(amount_cents=900, type="income", category="Salary", date="2026-03-02")
-    second = client.get("/").get_data(as_text=True)
-
-    assert "R1.00" in first and "R10.00" not in first
-    assert "R10.00" in second
+    assert stats(page) == {
+        "Total income": "R5,000.00",
+        "Total expenses": "R1,234.55",
+        "Net balance": "R3,765.45",
+    }
+    assert "stat-negative" not in page.find("div", cls="stat-net").classes
 
 
 def test_dashboard_negative_net_balance_is_shown_and_flagged(client, add):
     add(amount_cents=1000, type="income", category="Salary", date="2026-03-01")
     add(amount_cents=5000, type="expense", category="Food", date="2026-03-02")
 
-    html = client.get("/").get_data(as_text=True)
+    page = parse(client.get("/").get_data(as_text=True))
 
-    assert "-R40.00" in html
-    assert "stat-negative" in html
+    assert stats(page)["Net balance"] == "-R40.00"
+    assert "stat-negative" in page.find("div", cls="stat-net").classes
 
 
 def test_dashboard_monthly_table_lists_each_month(client, add):
     add(amount_cents=1000, type="income", category="Salary", date="2026-02-10")
     add(amount_cents=300, type="expense", category="Food", date="2026-03-10")
+    add(amount_cents=5000, type="expense", category="Rent", date="2026-03-11")
 
-    html = client.get("/").get_data(as_text=True)
+    page = parse(client.get("/").get_data(as_text=True))
 
-    assert "February 2026" in html
-    assert "March 2026" in html
-    assert "date_from=2026-03-01" in html and "date_to=2026-03-31" in html
+    assert monthly_rows(page) == [
+        {"Month": "March 2026", "Income": "R0.00", "Expenses": "R53.00", "Net": "-R53.00"},
+        {"Month": "February 2026", "Income": "R10.00", "Expenses": "R0.00", "Net": "R10.00"},
+    ]
+
+
+def test_each_monthly_summary_link_shows_exactly_that_months_transactions(client, add):
+    # Month-end and month-start days, a leap day and a year boundary.
+    for day in ("2024-02-29", "2024-03-01", "2025-12-31", "2026-01-01", "2026-02-28"):
+        add(date=day, description=day)
+
+    page = parse(client.get("/").get_data(as_text=True))
+    section = page.find("section", aria_labelledby="monthly-heading")
+    shown = {}
+    for link in section.find_all("a"):
+        listing = parse(client.get(link.get("href")).get_data(as_text=True))
+        shown[link.text()] = [r["Date"] for r in table_rows(listing.find("table", cls="txn-table"))]
+
+    assert shown == {
+        "February 2024": ["2024-02-29"],
+        "March 2024": ["2024-03-01"],
+        "December 2025": ["2025-12-31"],
+        "January 2026": ["2026-01-01"],
+        "February 2026": ["2026-02-28"],
+    }
 
 
 def test_dashboard_defaults_to_latest_month_with_expenses(client, add):
@@ -79,28 +118,30 @@ def test_dashboard_month_picker_changes_the_breakdown(client, add):
     add(amount_cents=1000, type="expense", category="Food", date="2026-01-10")
     add(amount_cents=7000, type="expense", category="Rent", date="2026-02-10")
 
-    january = client.get("/?month=2026-01").get_data(as_text=True)
-    february = client.get("/?month=2026-02").get_data(as_text=True)
+    january = parse(client.get("/?month=2026-01").get_data(as_text=True))
+    february = parse(client.get("/?month=2026-02").get_data(as_text=True))
 
-    january_breakdown = january.split("Expenses by category")[1].split("Recent transactions")[0]
-    february_breakdown = february.split("Expenses by category")[1].split("Recent transactions")[0]
+    assert [(i["category"], i["summary"]) for i in breakdown_items(january)] == [
+        ("Food", "R10.00 · 100.0%")
+    ]
+    assert [(i["category"], i["summary"]) for i in breakdown_items(february)] == [
+        ("Rent", "R70.00 · 100.0%")
+    ]
+    picker = january.find("form", cls="inline-form")
+    assert form_state(picker) == {"month": "2026-01"}
+    assert [o.get("value") for o in picker.find_all("option")] == ["2026-02", "2026-01"]
 
-    assert "Total expenses in January 2026" in january
-    assert "100.0%" in january_breakdown
-    assert "Rent" not in january_breakdown
-    assert "Total expenses in February 2026" in february
-    assert "Rent" in february_breakdown and "R70.00" in february_breakdown
-    assert "Food" not in february_breakdown
 
-
-def test_dashboard_breakdown_shows_percentages(client, add):
+def test_dashboard_breakdown_shows_amounts_percentages_and_matching_bars(client, add):
     add(amount_cents=3000, type="expense", category="Food", date="2026-03-10")
     add(amount_cents=7000, type="expense", category="Rent", date="2026-03-10")
 
-    html = client.get("/?month=2026-03").get_data(as_text=True)
+    page = parse(client.get("/?month=2026-03").get_data(as_text=True))
 
-    assert "70.0%" in html and "30.0%" in html
-    assert "width: 70.0%" in html
+    assert breakdown_items(page) == [
+        {"category": "Rent", "summary": "R70.00 · 70.0%", "bar": "width: 70.0%"},
+        {"category": "Food", "summary": "R30.00 · 30.0%", "bar": "width: 30.0%"},
+    ]
 
 
 def test_dashboard_month_without_expenses_shows_empty_message(client, add):
@@ -151,11 +192,20 @@ def test_list_shows_transactions_newest_first_with_totals(client, add):
     add(amount_cents=1000, type="expense", date="2026-01-01", description="older")
     add(amount_cents=250000, type="income", category="Salary", date="2026-02-01", description="newer")
 
-    html = client.get("/transactions").get_data(as_text=True)
+    page = parse(client.get("/transactions").get_data(as_text=True))
 
-    assert html.index("newer") < html.index("older")
-    assert "2 transactions" in html
-    assert "R2,500.00" in html and "R10.00" in html and "R2,490.00" in html
+    rows = table_rows(page.find("table", cls="txn-table"))
+    assert [(r["Description"], r["Type"], r["Amount"]) for r in rows] == [
+        ("newer", "Income", "+R2,500.00"),
+        ("older", "Expense", "−R10.00"),
+    ]
+    box = page.find("dl", cls="mini-stats")
+    assert {d.find("dt").text(): d.find("dd").text() for d in box.find_all("div")} == {
+        "Income": "R2,500.00",
+        "Expenses": "R10.00",
+        "Net": "R2,490.00",
+    }
+    assert page.find("h2", id="results-heading").text() == "2 transactions"
 
 
 def test_list_escapes_html_in_descriptions(client, add):
@@ -201,14 +251,20 @@ def test_list_filters_combine_and_form_keeps_selected_values(client, add):
     add(type="expense", category="Food", date="2026-02-10", description="match-me")
     add(type="expense", category="Rent", date="2026-02-10", description="other-cat")
 
-    html = client.get(
-        "/transactions?type=expense&category=Food&date_from=2026-02-01&date_to=2026-02-28"
-    ).get_data(as_text=True)
+    page = parse(
+        client.get(
+            "/transactions?type=expense&category=Food&date_from=2026-02-01&date_to=2026-02-28"
+        ).get_data(as_text=True)
+    )
 
-    assert "match-me" in html and "other-cat" not in html
-    assert '<option value="expense" selected>' in html
-    assert '<option value="Food" selected>' in html
-    assert 'value="2026-02-01"' in html and 'value="2026-02-28"' in html
+    rows = table_rows(page.find("table", cls="txn-table"))
+    assert [r["Description"] for r in rows] == ["match-me"]
+    assert form_state(page.find("form", cls="filters")) == {
+        "type": "expense",
+        "category": "Food",
+        "date_from": "2026-02-01",
+        "date_to": "2026-02-28",
+    }
 
 
 def test_list_filter_with_no_matches_shows_empty_message(client, add):
@@ -266,21 +322,31 @@ def test_list_links_carry_all_active_filters_through_to_the_form(client, add):
 # --- add -------------------------------------------------------------------
 
 
-def test_new_form_renders_with_accessible_labels(client):
-    response = client.get("/transactions/new")
-    html = response.get_data(as_text=True)
+def test_new_form_fields_are_labelled_and_the_type_group_has_a_legend(client):
+    page = parse(client.get("/transactions/new").get_data(as_text=True))
+    form = page.find("form", cls="form")
 
-    assert response.status_code == 200
-    for field in ("amount", "category", "date", "description"):
-        assert f'<label for="{field}">' in html
-    assert "<legend>Type</legend>" in html
-    assert 'name="csrf_token"' in html
+    labels = {l.get("for"): l.text() for l in form.find_all("label") if l.get("for")}
+    assert labels == {
+        "amount": "Amount (R)",
+        "category": "Category",
+        "date": "Date",
+        "description": "Description",
+    }
+    for radio in form.find_all("input", type="radio"):
+        assert "label" in [a.tag for a in radio.ancestors()]  # label wraps the radio button
+    assert form.find("fieldset").find("legend").text() == "Type"
+
+    ids = {e.get("id") for e in page.iter() if e.get("id")}
+    for element in page.iter():
+        for target in element.get("aria-describedby", "").split():
+            assert target in ids, f"aria-describedby points at missing id {target!r}"
 
 
 def test_new_form_preselects_type_from_query(client):
-    html = client.get("/transactions/new?type=income").get_data(as_text=True)
+    page = parse(client.get("/transactions/new?type=income").get_data(as_text=True))
 
-    assert 'id="type-income" name="type" value="income" required checked' in html
+    assert form_state(page.find("form", cls="form"))["type"] == "income"
 
 
 def test_create_transaction_saves_to_the_database(client, conn, form):
@@ -347,23 +413,42 @@ def test_create_rejects_invalid_input_with_400_and_message(client, conn, form, o
 def test_invalid_create_keeps_what_the_user_typed(client, form):
     response = client.post(
         "/transactions/new",
-        data=form(amount="abc", description="Keep this text", date="2026-03-20"),
+        data=form(amount="abc", description="Keep this text", date="2026-03-20", type="income"),
     )
-    html = response.get_data(as_text=True)
 
-    assert 'value="abc"' in html
-    assert 'value="Keep this text"' in html
-    assert 'value="2026-03-20"' in html
+    state = form_state(parse(response.get_data(as_text=True)).find("form", cls="form"))
+
+    assert state["amount"] == "abc"
+    assert state["description"] == "Keep this text"
+    assert state["date"] == "2026-03-20"
+    assert state["type"] == "income"
 
 
 def test_invalid_create_shows_an_error_summary_and_marks_fields_invalid(client, form):
     response = client.post("/transactions/new", data=form(amount="", description=""))
-    html = response.get_data(as_text=True)
+    page = parse(response.get_data(as_text=True))
 
-    assert 'id="error-summary"' in html
-    assert 'href="#amount"' in html and 'href="#description"' in html
-    assert 'aria-invalid="true"' in html
-    assert 'id="error-amount"' in html
+    summary = page.find(id="error-summary")
+    assert {a.get("href"): a.text() for a in summary.find_all("a")} == {
+        "#amount": "Amount is required.",
+        "#description": "Description is required.",
+    }
+    for field in ("amount", "description"):
+        control = page.find(id=field)
+        assert control.get("aria-invalid") == "true"
+        assert f"error-{field}" in control.get("aria-describedby").split()
+        assert page.find(id=f"error-{field}") is not None
+    assert page.find(id="category").get("aria-invalid") is None  # valid fields are not flagged
+
+
+def test_error_summary_links_always_point_at_real_fields(client, form):
+    response = client.post("/transactions/new", data=form(type=None, category="", date="", amount=""))
+    page = parse(response.get_data(as_text=True))
+
+    ids = {e.get("id") for e in page.iter() if e.get("id")}
+    links = parse_links(page.find(id="error-summary"))
+    assert set(links) == {"#amount", "#type-income", "#category", "#date"}
+    assert all(href[1:] in ids for href in links)
 
 
 def test_income_category_on_expense_is_rejected_by_the_server(client, conn, form):
@@ -379,14 +464,17 @@ def test_income_category_on_expense_is_rejected_by_the_server(client, conn, form
 def test_edit_form_is_prefilled(client, add):
     tid = add(amount_cents=123456, type="income", category="Salary", date="2026-02-03", description="Pay")
 
-    html = client.get(f"/transactions/{tid}/edit").get_data(as_text=True)
+    page = parse(client.get(f"/transactions/{tid}/edit").get_data(as_text=True))
+    state = form_state(page.find("form", cls="form"))
 
-    assert 'value="1234.56"' in html
-    assert 'value="Pay"' in html
-    assert 'value="2026-02-03"' in html
-    assert 'value="income" required checked' in html
-    assert '<option value="Salary" selected>' in html
-    assert "Edit transaction" in html
+    assert {k: state[k] for k in ("amount", "type", "category", "date", "description")} == {
+        "amount": "1234.56",
+        "type": "income",
+        "category": "Salary",
+        "date": "2026-02-03",
+        "description": "Pay",
+    }
+    assert page.find("h1").text() == "Edit transaction"
 
 
 def test_edit_updates_the_transaction(client, conn, add, form):
@@ -477,13 +565,16 @@ def test_delete_missing_transaction_is_404_for_get_and_post(client, form):
     assert client.post("/transactions/999/delete", data={"csrf_token": form()["csrf_token"]}).status_code == 404
 
 
-def test_list_delete_links_go_to_the_confirmation_page_not_straight_to_deleting(client, conn, add):
-    tid = add()
+def test_list_delete_links_go_to_the_confirmation_page_not_straight_to_deleting(client, add):
+    tid = add(description="Weekly shop")
 
-    html = client.get("/transactions").get_data(as_text=True)
+    page = parse(client.get("/transactions").get_data(as_text=True))
 
-    assert f'href="/transactions/{tid}/delete' in html
-    assert "<form" not in html.split("<table")[1].split("</table>")[0]
+    table = page.find("table", cls="txn-table")
+    link = next(a for a in table.find_all("a") if a.text() == "Delete")
+    assert link.get("href").startswith(f"/transactions/{tid}/delete")
+    assert "Weekly shop" in link.get("aria-label")  # screen readers know which row
+    assert table.find_all("form") == []  # no one-click delete buttons in the list
 
 
 # --- preserving filters (next) --------------------------------------------
@@ -526,10 +617,16 @@ def test_the_dashboard_is_an_allowed_place_to_return_to(client, form):
 def test_forms_carry_next_in_a_hidden_field_and_cancel_link(client, add):
     tid = add()
 
-    html = client.get(f"/transactions/{tid}/edit?next=/transactions%3Ftype%3Dexpense").get_data(as_text=True)
+    page = parse(
+        client.get(f"/transactions/{tid}/edit?next=/transactions%3Ftype%3Dexpense").get_data(
+            as_text=True
+        )
+    )
+    form = page.find("form", cls="form")
 
-    assert '<input type="hidden" name="next" value="/transactions?type=expense">' in html
-    assert 'href="/transactions?type=expense">Cancel' in html
+    assert form_state(form)["next"] == "/transactions?type=expense"
+    cancel = next(a for a in form.find_all("a") if a.text() == "Cancel")
+    assert cancel.get("href") == "/transactions?type=expense"
 
 
 @pytest.mark.parametrize(
@@ -543,6 +640,12 @@ def test_forms_carry_next_in_a_hidden_field_and_cancel_link(client, add):
         "/admin",
         "/transactions/new",
         "/transactions\r\nSet-Cookie: x=y",
+        " //evil.example",
+        "/%2F%2Fevil.example",
+        "////evil.example",
+        "/transactions/../admin",
+        "\t/transactions",
+        "/static/css/style.css",
         "",
     ],
 )
@@ -581,17 +684,6 @@ def test_delete_without_a_csrf_token_is_rejected(client, conn, add):
 
     assert response.status_code == 403
     assert repository.get_transaction(conn, tid) is not None
-
-
-def test_every_form_page_includes_a_csrf_token_that_works(app, conn, form):
-    fresh_client = app.test_client()
-    html = fresh_client.get("/transactions/new").get_data(as_text=True)
-    token = html.split('name="csrf_token" value="')[1].split('"')[0]
-
-    response = fresh_client.post("/transactions/new", data=form(csrf_token=token))
-
-    assert response.status_code == 303
-    assert len(rows(conn)) == 1
 
 
 # --- errors and methods ----------------------------------------------------
@@ -640,13 +732,173 @@ def test_created_data_survives_a_new_app_and_client(app, client, form, tmp_path)
 
 
 def test_pages_share_navigation_and_mark_the_current_page(client):
-    html = client.get("/transactions").get_data(as_text=True)
+    page = parse(client.get("/transactions").get_data(as_text=True))
 
-    assert 'aria-current="page">Transactions' in html
-    assert "Skip to main content" in html
-    assert '<html lang="en">' in html
+    current = [a.text() for a in page.find("nav").find_all("a") if a.get("aria-current") == "page"]
+    assert current == ["Transactions"]
+    assert page.find("html").get("lang") == "en"
+    assert page.find("a", cls="skip-link").get("href") == "#main"
+    assert page.find(id="main") is not None
 
 
 def test_static_files_are_served(client):
-    assert client.get("/static/css/style.css").status_code == 200
-    assert client.get("/static/js/app.js").status_code == 200
+    for url in ("/static/css/style.css", "/static/js/app.js"):
+        with client.get(url) as response:
+            assert response.status_code == 200
+
+
+# --- hardening found during the Stage D review -----------------------------
+
+
+@pytest.mark.parametrize("huge_id", [2**63, 10**20])
+@pytest.mark.parametrize("action", ["edit", "delete"])
+def test_ids_too_big_for_the_database_are_a_404_not_a_server_error(client, form, huge_id, action):
+    url = f"/transactions/{huge_id}/{action}"
+
+    assert client.get(url).status_code == 404
+    assert client.post(url, data=form()).status_code == 404
+
+
+@pytest.mark.parametrize("text", ["\x00", "ab\x00cd", "a\nb", "a\tb", "\x07", "a\u2028b"])
+def test_control_characters_in_a_description_are_a_validation_error_not_a_crash(
+    client, conn, form, text
+):
+    response = client.post("/transactions/new", data=form(description=text))
+
+    assert response.status_code == 400
+    assert "line breaks or control characters" in response.get_data(as_text=True)
+    assert rows(conn) == []
+
+
+def test_oversized_post_is_rejected_with_413_and_stores_nothing(client, conn, form):
+    response = client.post("/transactions/new", data=form(description="x" * 20_000))
+
+    assert response.status_code == 413
+    assert "too large" in response.get_data(as_text=True)
+    assert rows(conn) == []
+
+
+@pytest.mark.parametrize("url", ["/", "/transactions/new", "/nope", "/static/css/style.css"])
+def test_every_response_carries_the_security_headers(client, url):
+    with client.get(url) as response:
+        policy = response.headers["Content-Security-Policy"]
+        directives = dict(part.strip().split(" ", 1) for part in policy.split(";"))
+
+        assert directives["default-src"] == "'self'"
+        assert directives["frame-ancestors"] == "'none'"
+        assert directives["object-src"] == "'none'"
+        # Inline styles are allowed (the bar widths); inline scripts never are.
+        assert [name for name, value in directives.items() if "'unsafe-inline'" in value] == [
+            "style-src"
+        ]
+        assert response.headers["X-Content-Type-Options"] == "nosniff"
+        assert response.headers["Referrer-Policy"] == "same-origin"
+
+
+def test_security_headers_are_also_sent_on_rejected_posts(client):
+    response = client.post("/transactions/new", data={})  # no CSRF token -> 403
+
+    assert response.status_code == 403
+    assert "Content-Security-Policy" in response.headers
+
+
+def test_templates_use_nothing_the_content_security_policy_would_block():
+    # The CSP forbids inline scripts, inline event handlers and other websites'
+    # files. Browsers are not available in this test suite, so check the source.
+    templates = Path(__file__).parent.parent / "app" / "templates"
+    for template in templates.glob("*.html"):
+        source = template.read_text(encoding="utf-8")
+        assert not re.search(r"<script(?![^>]*\bsrc=)", source), template.name
+        assert not re.search(r"\son[a-z]+\s*=", source), template.name
+        assert "javascript:" not in source, template.name
+        assert "http://" not in source and "https://" not in source, template.name
+
+
+def test_session_cookie_is_httponly_and_samesite_lax(app):
+    response = app.test_client().get("/transactions/new")  # a new visitor gets a cookie
+
+    cookie = response.headers["Set-Cookie"]
+    assert cookie.startswith("session=")
+    assert "HttpOnly" in cookie
+    assert "SameSite=Lax" in cookie
+
+
+def test_a_405_response_lists_the_allowed_methods(client, form):
+    response = client.post("/", data=form())
+
+    assert response.status_code == 405
+    assert "GET" in response.headers["Allow"]
+
+
+def test_unexpected_errors_show_a_generic_page_without_internal_details(app, client, monkeypatch):
+    def explode(*args, **kwargs):
+        raise RuntimeError("secret internal detail /home/someone/spendwise.sqlite")
+
+    monkeypatch.setattr(services, "get_totals", explode)
+    app.config["PROPAGATE_EXCEPTIONS"] = False  # behave like production, not test mode
+
+    response = client.get("/")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 500
+    assert "Something went wrong" in body
+    assert "secret internal detail" not in body and "Traceback" not in body
+    assert "Content-Security-Policy" in response.headers
+
+
+def test_editing_a_transaction_that_vanishes_mid_request_is_a_404(client, add, form, monkeypatch):
+    tid = add()
+    monkeypatch.setattr(repository, "update_transaction", lambda *args, **kwargs: False)
+
+    response = client.post(f"/transactions/{tid}/edit", data=form())
+
+    assert response.status_code == 404
+    assert "Transaction updated." not in client.get("/transactions").get_data(as_text=True)
+
+
+def test_deleting_a_transaction_that_vanishes_mid_request_is_a_404(client, add, form, monkeypatch):
+    tid = add()
+    monkeypatch.setattr(repository, "delete_transaction", lambda *args, **kwargs: False)
+
+    response = client.post(f"/transactions/{tid}/delete", data={"csrf_token": form()["csrf_token"]})
+
+    assert response.status_code == 404
+    assert "Transaction deleted." not in client.get("/transactions").get_data(as_text=True)
+
+
+@pytest.mark.parametrize("page, rows_afterwards", [("new", 2), ("edit", 1), ("delete", 0)])
+def test_every_form_page_includes_a_csrf_token_that_works(app, conn, add, page, rows_afterwards):
+    tid = add(description="existing")
+    urls = {
+        "new": "/transactions/new",
+        "edit": f"/transactions/{tid}/edit",
+        "delete": f"/transactions/{tid}/delete",
+    }
+    visitor = app.test_client()  # a brand-new browser: no session, no token yet
+    html = visitor.get(urls[page]).get_data(as_text=True)
+    post_form = next(f for f in parse(html).find_all("form") if f.get("method") == "post")
+    submission = form_state(post_form)  # exactly what the browser would send
+    if page == "new":  # the add form starts blank, so fill it in like a person would
+        submission.update(
+            amount="12.50", type="expense", category="Food", date="2026-03-15", description="typed"
+        )
+
+    response = visitor.post(urls[page], data=submission)
+
+    assert response.status_code == 303
+    assert len(rows(conn)) == rows_afterwards
+
+
+def test_dashboard_marks_only_negative_monthly_net_as_an_expense_colour(client, add):
+    add(type="expense", category="Food", amount_cents=5000, date="2026-03-10")  # net -R50.00
+    add(type="income", category="Salary", amount_cents=9000, date="2026-02-10")  # net +R90.00
+
+    page = parse(client.get("/").get_data(as_text=True))
+    table = page.find("section", aria_labelledby="monthly-heading").find("table")
+    classes_by_month = {}
+    for row in table.find("tbody").find_all("tr"):
+        cells = [c for c in row.children if c.tag in ("td", "th")]
+        classes_by_month[cells[0].text()] = cells[3].classes
+
+    assert "amount-expense" in classes_by_month["March 2026"]
+    assert "amount-expense" not in classes_by_month["February 2026"]

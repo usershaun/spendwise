@@ -72,6 +72,9 @@ def create_app(test_config=None):
         # The browser will not send the session cookie on requests started by
         # other websites, which is an extra layer on top of the CSRF token.
         SESSION_COOKIE_SAMESITE="Lax",
+        # A transaction form is well under 1 KB. Refusing bigger requests stops
+        # anyone from making the server read huge bodies into memory.
+        MAX_CONTENT_LENGTH=16 * 1024,
     )
     if test_config is not None:
         app.config.from_mapping(test_config)

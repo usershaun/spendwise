@@ -99,7 +99,7 @@ def list_transactions(
     return conn.execute(sql, params).fetchall()
 
 
-def get_totals(conn, *, type=None, category=None, date_from=None, date_to=None):
+def get_income_expense_totals(conn, *, type=None, category=None, date_from=None, date_to=None):
     """Return (income_cents, expense_cents) for the matching transactions."""
     where, params = _build_where(type, category, date_from, date_to)
     row = conn.execute(

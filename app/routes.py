@@ -21,6 +21,7 @@ from flask import (
     Blueprint,
     abort,
     flash,
+    make_response,
     redirect,
     render_template,
     request,
@@ -36,6 +37,23 @@ from app.services import ValidationError
 bp = Blueprint("main", __name__)
 
 RECENT_LIMIT = 5
+
+# SQLite integers are 64-bit, so a larger id cannot exist. Capping the URL
+# converter turns absurd ids into an ordinary 404 instead of a database error.
+_ID = "<int(max=9223372036854775807):transaction_id>"
+
+# Only allow the page's own files; scripts and styles must come from this site.
+# "unsafe-inline" is for styles only: the category bars set their width inline.
+_CONTENT_SECURITY_POLICY = "; ".join(
+    [
+        "default-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        "frame-ancestors 'none'",  # nobody may show these pages inside a frame
+        "form-action 'self'",
+        "base-uri 'self'",
+        "object-src 'none'",
+    ]
+)
 
 # Small display helpers made available inside templates.
 bp.add_app_template_filter(services.format_cents, "rand")
@@ -64,6 +82,14 @@ def _template_context():
     }
 
 
+@bp.after_app_request
+def _add_security_headers(response):
+    response.headers["Content-Security-Policy"] = _CONTENT_SECURITY_POLICY
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "same-origin"
+    return response
+
+
 @bp.before_request
 def _check_csrf():
     if request.method != "POST":
@@ -90,6 +116,8 @@ def _safe_next(value):
     another website.
     """
     default = url_for("main.transaction_list")
+    # Obviously suspicious values are refused outright. The result below is also
+    # rebuilt from just the path and query, so this is defence in depth.
     if not value or any(ord(char) < 32 for char in value) or "\\" in value:
         return default
     parts = urlsplit(value)
@@ -211,7 +239,7 @@ def new_transaction():
     return _render_form("new", form, {}, next_url)
 
 
-@bp.route("/transactions/<int:transaction_id>/edit", methods=["GET", "POST"])
+@bp.route(f"/transactions/{_ID}/edit", methods=["GET", "POST"])
 def edit_transaction(transaction_id):
     conn = get_db()
     transaction = _get_or_404(conn, transaction_id)
@@ -236,7 +264,7 @@ def edit_transaction(transaction_id):
     return _render_form("edit", form, {}, next_url, transaction)
 
 
-@bp.route("/transactions/<int:transaction_id>/delete", methods=["GET", "POST"])
+@bp.route(f"/transactions/{_ID}/delete", methods=["GET", "POST"])
 def delete_transaction(transaction_id):
     conn = get_db()
     transaction = _get_or_404(conn, transaction_id)
@@ -260,11 +288,19 @@ _ERROR_MESSAGES = {
     403: "That form could not be verified. Go back, reload the page and try again.",
     404: "We couldn't find that page or transaction. It may have been deleted.",
     405: "That action isn't available at this address.",
+    413: "That request was too large to be a transaction form.",
 }
 
 
 @bp.app_errorhandler(HTTPException)
 def _handle_http_error(error):
     message = _ERROR_MESSAGES.get(error.code, "Something went wrong with that request.")
-    html = render_template("error.html", code=error.code, name=error.name, message=message)
-    return html, error.code
+    response = make_response(
+        render_template("error.html", code=error.code, name=error.name, message=message),
+        error.code,
+    )
+    # Keep any headers the status requires, such as "Allow" on a 405.
+    for name, value in error.get_headers():
+        if name.lower() != "content-type":
+            response.headers[name] = value
+    return response

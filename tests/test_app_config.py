@@ -1,3 +1,6 @@
+import sqlite3
+
+import flask
 import pytest
 
 import app as app_module
@@ -119,12 +122,29 @@ def test_get_db_returns_one_connection_per_context_and_closes_it(tmp_path):
         assert db.get_db() is first
         first.execute("SELECT 1")
 
-    with pytest.raises(Exception, match="closed database"):
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
         first.execute("SELECT 1")
 
 
-def test_test_app_does_not_touch_the_real_instance_database(tmp_path):
-    app = create_app({"SECRET_KEY": "test", "DATABASE": str(tmp_path / "t.sqlite")})
+def test_production_key_must_be_at_least_32_characters():
+    with pytest.raises(RuntimeError, match="too short"):
+        app_module.resolve_secret_key({"SPENDWISE_SECRET_KEY": "a" * 31})
 
-    assert str(tmp_path) in app.config["DATABASE"]
-    assert "instance" not in app.config["DATABASE"]
+    assert app_module.resolve_secret_key({"SPENDWISE_SECRET_KEY": "a" * 32}) == "a" * 32
+
+
+def test_default_app_stores_data_in_the_instance_folder(monkeypatch, tmp_path):
+    # This is exactly what `flask --app app run` does: create_app() with no settings.
+    monkeypatch.setenv("SPENDWISE_ENV", "development")
+    monkeypatch.delenv("SPENDWISE_SECRET_KEY", raising=False)
+    monkeypatch.setattr(
+        flask.Flask, "auto_find_instance_path", lambda self: str(tmp_path / "instance")
+    )
+
+    app = create_app()
+
+    database = tmp_path / "instance" / "spendwise.sqlite"
+    assert app.config["DATABASE"] == str(database)
+    assert database.exists()
+    assert app.config["SECRET_KEY"] == app_module.DEV_FALLBACK_SECRET_KEY
+    assert app.test_client().get("/").status_code == 200

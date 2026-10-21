@@ -11,6 +11,7 @@ that is whole-number arithmetic.
 
 import calendar
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date as _date
 
@@ -179,6 +180,11 @@ def parse_description(raw):
     text = _clean(raw)
     if not text:
         raise ValidationError("Description is required.")
+    # Control characters (NUL, line breaks, tabs, ...) and line/paragraph
+    # separators never belong in a one-line description. A NUL would even trip
+    # SQLite's length() check and cause a server error instead of a message.
+    if any(unicodedata.category(char) in ("Cc", "Zl", "Zp") for char in text):
+        raise ValidationError("Description cannot contain line breaks or control characters.")
     if len(text) > MAX_DESCRIPTION_LENGTH:
         raise ValidationError(
             f"Description must be {MAX_DESCRIPTION_LENGTH} characters or fewer."
@@ -336,7 +342,7 @@ class CategoryBreakdown:
 
 def get_totals(conn, **filters):
     """Income, expenses and net balance. Optional filters as in the repository."""
-    income, expense = repository.get_totals(conn, **filters)
+    income, expense = repository.get_income_expense_totals(conn, **filters)
     return Totals(income, expense)
 
 
