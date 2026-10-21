@@ -4,7 +4,6 @@ import pytest
 
 from app import db, repository
 
-
 # --- create / get ----------------------------------------------------------
 
 
@@ -195,7 +194,7 @@ def test_hostile_filter_value_is_treated_as_plain_text(conn, add):
 
 
 def test_totals_on_empty_database_are_zero(conn):
-    assert repository.get_totals(conn) == (0, 0)
+    assert repository.get_income_expense_totals(conn) == (0, 0)
 
 
 def test_totals_sum_income_and_expenses_separately(conn, add):
@@ -204,7 +203,7 @@ def test_totals_sum_income_and_expenses_separately(conn, add):
     add(amount_cents=1999, type="expense")
     add(amount_cents=1, type="expense")
 
-    assert repository.get_totals(conn) == (102500, 2000)
+    assert repository.get_income_expense_totals(conn) == (102500, 2000)
 
 
 def test_totals_respect_filters(conn, add):
@@ -212,8 +211,8 @@ def test_totals_respect_filters(conn, add):
     add(amount_cents=2000, type="expense", category="Rent", date="2026-01-10")
     add(amount_cents=5000, type="income", category="Salary", date="2026-02-10")
 
-    assert repository.get_totals(conn, category="Food") == (0, 1000)
-    assert repository.get_totals(conn, date_from="2026-02-01") == (5000, 0)
+    assert repository.get_income_expense_totals(conn, category="Food") == (0, 1000)
+    assert repository.get_income_expense_totals(conn, date_from="2026-02-01") == (5000, 0)
 
 
 # --- monthly totals --------------------------------------------------------
@@ -368,3 +367,14 @@ def test_list_limit_larger_than_row_count_returns_everything(conn, add):
     add()
 
     assert len(repository.list_transactions(conn, limit=50)) == 1
+
+
+# --- filters are exact matches, never patterns -----------------------------
+
+
+def test_category_filter_is_an_exact_match_not_a_pattern(conn, add):
+    add(category="Food", description="food row")
+
+    for pattern in ("%", "F%", "Foo_", "food", "FOOD"):
+        assert repository.list_transactions(conn, category=pattern) == [], pattern
+    assert len(repository.list_transactions(conn, category="Food")) == 1

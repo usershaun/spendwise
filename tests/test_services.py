@@ -1,8 +1,10 @@
+import random
+from decimal import Decimal
+
 import pytest
 
 from app import services
 from app.services import ValidationError
-
 
 # --- amounts ---------------------------------------------------------------
 
@@ -563,3 +565,79 @@ def test_default_breakdown_month_falls_back_to_newest_month_if_no_expenses(conn,
     summaries = services.get_monthly_summary(conn)
 
     assert services.default_breakdown_month(summaries) == "2026-02"
+
+
+# --- descriptions: unusual characters --------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["\x00", "ab\x00cd", "a\nb", "a\r\nb", "a\tb", "\x07", "a\x85b", "a b", "a b"],
+)
+def test_description_rejects_control_characters_and_line_breaks(text):
+    with pytest.raises(ValidationError, match="control characters"):
+        services.parse_description(text)
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (" \n padded \t ", "padded"),  # whitespace at the edges is trimmed, not rejected
+        ("\x85x", "x"),
+        ("Café ☕", "Café ☕"),
+        ("naïve — “quoted”", "naïve — “quoted”"),
+        ("family \U0001f468‍\U0001f469‍\U0001f467", "family \U0001f468‍\U0001f469‍\U0001f467"),
+    ],
+)
+def test_description_trims_the_edges_but_keeps_ordinary_unicode(raw, expected):
+    assert services.parse_description(raw) == expected
+
+
+# --- money: compared with an independent Decimal implementation -------------
+
+
+def _sample_cents(seed, count=500):
+    rng = random.Random(seed)
+    edge_values = [0, 1, 9, 10, 99, 100, 101, 99_999, 100_000, 99_999_999_999]
+    return edge_values + [rng.randrange(10**11) for _ in range(count)]
+
+
+def test_formatting_matches_an_independent_decimal_implementation():
+    for cents in _sample_cents(2026):
+        expected = f"R{Decimal(cents) / 100:,.2f}"
+
+        assert services.format_cents(cents) == expected
+        assert services.format_cents(-cents) == (f"-{expected}" if cents else expected)
+
+
+def test_parsing_matches_an_independent_decimal_implementation():
+    for cents in _sample_cents(7):
+        if cents == 0:
+            continue
+        full = f"{Decimal(cents) / 100:.2f}"  # e.g. "1234.50"
+        trimmed = full.rstrip("0").rstrip(".")  # e.g. "1234.5" or "1234"
+
+        assert services.parse_amount_to_cents(full) == cents
+        assert services.parse_amount_to_cents(trimmed) == int(Decimal(trimmed) * 100)
+
+
+# --- percentage rounding ---------------------------------------------------
+
+
+def test_category_percentages_round_half_up(conn, add):
+    add(amount_cents=100, category="Food")
+    add(amount_cents=200, category="Rent")
+
+    shares = services.get_category_breakdown(conn).shares
+
+    # 66.666...% must round UP to 66.7 (rounding down would give 66.6).
+    assert [(s.category, s.percent_label) for s in shares] == [("Rent", "66.7%"), ("Food", "33.3%")]
+
+
+def test_category_percentages_that_land_exactly_on_a_tie_round_up(conn, add):
+    add(amount_cents=1, category="Food")  # 1/16 = 6.25%
+    add(amount_cents=15, category="Rent")  # 15/16 = 93.75%
+
+    shares = services.get_category_breakdown(conn).shares
+
+    assert [(s.category, s.percent_label) for s in shares] == [("Rent", "93.8%"), ("Food", "6.3%")]
