@@ -9,6 +9,7 @@ integer 15050 (cents) by reading the digits directly, and all arithmetic after
 that is whole-number arithmetic.
 """
 
+import calendar
 import re
 from dataclasses import dataclass, field
 from datetime import date as _date
@@ -16,15 +17,36 @@ from datetime import date as _date
 from app import repository
 
 TRANSACTION_TYPES = ("income", "expense")
-CATEGORIES = (
-    "Salary",
+
+# Income and expenses have their own category lists. The two "Other" entries
+# have different names so every category name is unique, which keeps the
+# category filter unambiguous.
+INCOME_CATEGORIES = ("Salary", "Freelance", "Gift", "Other income")
+EXPENSE_CATEGORIES = (
     "Food",
     "Transport",
     "Rent",
     "Utilities",
     "Entertainment",
     "Health",
-    "Other",
+    "Other expense",
+)
+CATEGORIES_BY_TYPE = {"income": INCOME_CATEGORIES, "expense": EXPENSE_CATEGORIES}
+CATEGORIES = INCOME_CATEGORIES + EXPENSE_CATEGORIES
+
+MONTH_NAMES = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 )
 
 MAX_DESCRIPTION_LENGTH = 200
@@ -106,11 +128,19 @@ def parse_type(raw):
     return text
 
 
-def parse_category(raw):
+def parse_category(raw, transaction_type=None):
+    """Check the category is on the list.
+
+    If `transaction_type` is 'income' or 'expense', the category must belong to
+    that type's list; otherwise any listed category is accepted (used by filters).
+    """
     text = _clean(raw)
     if not text:
         raise ValidationError("Category is required.")
-    if text not in CATEGORIES:
+    if transaction_type in CATEGORIES_BY_TYPE:
+        if text not in CATEGORIES_BY_TYPE[transaction_type]:
+            raise ValidationError(f"Choose an {transaction_type} category from the list.")
+    elif text not in CATEGORIES:
         raise ValidationError("Choose a category from the list.")
     return text
 
@@ -181,12 +211,26 @@ def validate_transaction(data):
         [
             ("amount", "amount_cents", parse_amount_to_cents),
             ("type", "type", parse_type),
-            ("category", "category", parse_category),
+        ],
+        data,
+    )
+
+    # The category must match the type, so it is checked after the type
+    # (if the type itself was invalid, any listed category is accepted).
+    try:
+        values["category"] = parse_category(data.get("category"), values.get("type"))
+    except ValidationError as error:
+        errors["category"] = str(error)
+
+    more_values, more_errors = _run(
+        [
             ("date", "date", parse_date),
             ("description", "description", parse_description),
         ],
         data,
     )
+    values.update(more_values)
+    errors.update(more_errors)
     return ValidationResult(values, errors)
 
 
@@ -234,6 +278,19 @@ def cents_to_input(cents):
     """Format cents for a form field: 123456 -> '1234.56' (no symbol or commas)."""
     rands, remainder = divmod(cents, 100)
     return f"{rands}.{remainder:02d}"
+
+
+def format_month(month):
+    """'2026-03' -> 'March 2026'. Raises ValidationError for an invalid month."""
+    month = parse_month(month)
+    return f"{MONTH_NAMES[int(month[5:7]) - 1]} {month[:4]}"
+
+
+def month_bounds(month):
+    """'2026-02' -> ('2026-02-01', '2026-02-28'): first and last day of the month."""
+    month = parse_month(month)
+    last_day = calendar.monthrange(int(month[:4]), int(month[5:7]))[1]
+    return f"{month}-01", f"{month}-{last_day:02d}"
 
 
 # --- summaries -------------------------------------------------------------
@@ -289,6 +346,19 @@ def get_monthly_summary(conn):
         MonthSummary(row["month"], row["income_cents"], row["expense_cents"])
         for row in repository.get_monthly_totals(conn)
     ]
+
+
+def default_breakdown_month(summaries):
+    """Pick the month the category breakdown should show first.
+
+    That is the most recent month that actually has expenses (a month with only
+    income would give an empty breakdown). Returns None if there is no data.
+    `summaries` is the newest-first list from get_monthly_summary.
+    """
+    for summary in summaries:
+        if summary.expense_cents > 0:
+            return summary.month
+    return summaries[0].month if summaries else None
 
 
 def get_category_breakdown(conn, month=None):

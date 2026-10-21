@@ -1,0 +1,63 @@
+{# Small reusable pieces shared by several pages. #}
+
+{# The red message under a form field. `errors` maps field name -> message. #}
+{% macro field_error(errors, name) -%}
+  {% if errors.get(name) %}
+    <p class="field-error" id="error-{{ name }}"><span class="visually-hidden">Error: </span>{{ errors[name] }}</p>
+  {% endif %}
+{%- endmacro %}
+
+{# Accessibility attributes for a field: links it to its hint/error text and flags it invalid. #}
+{% macro described(errors, name, hint=false) -%}
+  {%- set ids = [] -%}
+  {%- if hint %}{% set _ = ids.append('hint-' ~ name) %}{% endif -%}
+  {%- if errors.get(name) %}{% set _ = ids.append('error-' ~ name) %} aria-invalid="true"{% endif -%}
+  {%- if ids %} aria-describedby="{{ ids|join(' ') }}"{% endif -%}
+{%- endmacro %}
+
+{# A category <select> with income and expense options grouped. #}
+{% macro category_options(selected, income_categories, expense_categories, placeholder) -%}
+  <option value="">{{ placeholder }}</option>
+  <optgroup label="Income categories" data-type="income">
+    {% for name in income_categories %}<option value="{{ name }}"{% if name == selected %} selected{% endif %}>{{ name }}</option>{% endfor %}
+  </optgroup>
+  <optgroup label="Expense categories" data-type="expense">
+    {% for name in expense_categories %}<option value="{{ name }}"{% if name == selected %} selected{% endif %}>{{ name }}</option>{% endfor %}
+  </optgroup>
+{%- endmacro %}
+
+{# A table of transactions. With actions=True each row has Edit and Delete links. #}
+{% macro transaction_table(rows, next_url, actions=True) %}
+  <div class="table-wrap">
+    <table class="txn-table" role="table">
+      <caption class="visually-hidden">Transactions, newest first</caption>
+      <thead role="rowgroup">
+        <tr role="row">
+          <th scope="col" role="columnheader">Date</th>
+          <th scope="col" role="columnheader">Description</th>
+          <th scope="col" role="columnheader">Category</th>
+          <th scope="col" role="columnheader">Type</th>
+          <th scope="col" role="columnheader" class="num">Amount</th>
+          {% if actions %}<th scope="col" role="columnheader"><span class="visually-hidden">Actions</span></th>{% endif %}
+        </tr>
+      </thead>
+      <tbody role="rowgroup">
+        {% for t in rows %}
+        <tr role="row">
+          <td role="cell" data-label="Date">{{ t.date }}</td>
+          <td role="cell" data-label="Description" class="desc">{{ t.description }}</td>
+          <td role="cell" data-label="Category">{{ t.category }}</td>
+          <td role="cell" data-label="Type"><span class="badge badge-{{ t.type }}">{{ t.type|capitalize }}</span></td>
+          <td role="cell" data-label="Amount" class="num amount-{{ t.type }}">{{ '+' if t.type == 'income' else '−' }}{{ t.amount_cents|rand }}</td>
+          {% if actions %}
+          <td role="cell" class="actions">
+            <a href="{{ url_for('main.edit_transaction', transaction_id=t.id, next=next_url) }}" aria-label="Edit {{ t.description }}">Edit</a>
+            <a class="link-danger" href="{{ url_for('main.delete_transaction', transaction_id=t.id, next=next_url) }}" aria-label="Delete {{ t.description }}">Delete</a>
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endmacro %}

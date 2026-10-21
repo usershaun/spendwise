@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% from "_macros.html" import field_error, described, category_options %}
+{% set heading = 'Add transaction' if mode == 'new' else 'Edit transaction' %}
+{% block title %}{{ heading }}{% endblock %}
+
+{% block content %}
+<h1>{{ heading }}</h1>
+
+{% if errors %}
+{% set anchors = {'type': 'type-income'} %}
+<div class="error-summary" id="error-summary" role="alert" tabindex="-1">
+  <h2>Please fix the following</h2>
+  <ul>
+    {% for name, message in errors.items() %}
+    <li><a href="#{{ anchors.get(name, name) }}">{{ message }}</a></li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<form method="post" class="card form" data-txn-form>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="next" value="{{ next_url }}">
+
+  <div class="field">
+    <label for="amount">Amount (R)</label>
+    <input type="text" id="amount" name="amount" inputmode="decimal" autocomplete="off" required
+           value="{{ form.get('amount', '') }}"{{ described(errors, 'amount', hint=true) }}>
+    <p class="hint" id="hint-amount">Digits and a decimal point only, for example 150 or 150.50.</p>
+    {{ field_error(errors, 'amount') }}
+  </div>
+
+  <fieldset class="field radio-group"{{ described(errors, 'type') }}>
+    <legend>Type</legend>
+    <label class="radio"><input type="radio" id="type-income" name="type" value="income" required{% if form.get('type') == 'income' %} checked{% endif %}> Income</label>
+    <label class="radio"><input type="radio" id="type-expense" name="type" value="expense" required{% if form.get('type') == 'expense' %} checked{% endif %}> Expense</label>
+    {{ field_error(errors, 'type') }}
+  </fieldset>
+
+  <div class="field">
+    <label for="category">Category</label>
+    <select id="category" name="category" required{{ described(errors, 'category') }}>
+      {{ category_options(form.get('category', ''), income_categories, expense_categories, 'Choose a category') }}
+    </select>
+    {{ field_error(errors, 'category') }}
+  </div>
+
+  <div class="field">
+    <label for="date">Date</label>
+    <input type="date" id="date" name="date" required value="{{ form.get('date', '') }}"
+           {% if mode == 'new' %}data-default-today{% endif %}{{ described(errors, 'date') }}>
+    {{ field_error(errors, 'date') }}
+  </div>
+
+  <div class="field">
+    <label for="description">Description</label>
+    <input type="text" id="description" name="description" maxlength="200" required autocomplete="off"
+           value="{{ form.get('description', '') }}"{{ described(errors, 'description', hint=true) }}>
+    <p class="hint" id="hint-description">Up to 200 characters.</p>
+    {{ field_error(errors, 'description') }}
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">{{ 'Save transaction' if mode == 'new' else 'Save changes' }}</button>
+    <a class="btn" href="{{ next_url }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

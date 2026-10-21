@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% from "_macros.html" import transaction_table %}
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<h1>Dashboard</h1>
+
+<section aria-labelledby="totals-heading">
+  <h2 id="totals-heading" class="visually-hidden">Totals</h2>
+  <dl class="stats">
+    <div class="stat stat-income">
+      <dt>Total income</dt>
+      <dd>{{ totals.income_cents|rand }}</dd>
+    </div>
+    <div class="stat stat-expense">
+      <dt>Total expenses</dt>
+      <dd>{{ totals.expense_cents|rand }}</dd>
+    </div>
+    <div class="stat stat-net{% if totals.net_cents < 0 %} stat-negative{% endif %}">
+      <dt>Net balance</dt>
+      <dd>{{ totals.net_cents|rand }}</dd>
+    </div>
+  </dl>
+</section>
+
+{% if not monthly %}
+<section class="empty-state" aria-labelledby="empty-heading">
+  <h2 id="empty-heading">No transactions yet</h2>
+  <p>Add your first income or expense and your totals, monthly summary and spending breakdown will appear here.</p>
+  <p>
+    <a class="btn btn-primary" href="{{ url_for('main.new_transaction', type='income', next=next_url) }}">Add income</a>
+    <a class="btn" href="{{ url_for('main.new_transaction', type='expense', next=next_url) }}">Add expense</a>
+  </p>
+</section>
+{% else %}
+<div class="grid-2">
+  <section class="card" aria-labelledby="monthly-heading">
+    <h2 id="monthly-heading">Monthly summary</h2>
+    <div class="table-wrap">
+      <table class="summary-table">
+        <caption class="visually-hidden">Income, expenses and net balance for each month</caption>
+        <thead>
+          <tr>
+            <th scope="col">Month</th>
+            <th scope="col" class="num">Income</th>
+            <th scope="col" class="num">Expenses</th>
+            <th scope="col" class="num">Net</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in monthly %}
+          {% set first, last = month_bounds(m.month) %}
+          <tr>
+            <th scope="row"><a href="{{ url_for('main.transaction_list', date_from=first, date_to=last) }}">{{ m.month|month_label }}</a></th>
+            <td class="num amount-income">{{ m.income_cents|rand }}</td>
+            <td class="num amount-expense">{{ m.expense_cents|rand }}</td>
+            <td class="num{% if m.net_cents < 0 %} amount-expense{% endif %}">{{ m.net_cents|rand }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="breakdown-heading">
+    <h2 id="breakdown-heading">Expenses by category</h2>
+
+    <form method="get" action="{{ url_for('main.dashboard') }}" class="inline-form">
+      <label for="month">Month</label>
+      <select id="month" name="month"{% if month_error %} aria-invalid="true" aria-describedby="error-month"{% endif %}>
+        {% for value in month_options %}
+        <option value="{{ value }}"{% if value == selected_month %} selected{% endif %}>{{ value|month_label }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn">Show</button>
+    </form>
+    {% if month_error %}
+    <p class="field-error" id="error-month" role="alert">{{ month_error }} Showing the latest month instead.</p>
+    {% endif %}
+
+    {% if breakdown.shares %}
+    {% set first, last = month_bounds(selected_month) %}
+    <p class="muted">Total expenses in {{ selected_month|month_label }}: <strong>{{ breakdown.total_cents|rand }}</strong></p>
+    <ul class="breakdown">
+      {% for share in breakdown.shares %}
+      <li>
+        <div class="breakdown-head">
+          <a href="{{ url_for('main.transaction_list', type='expense', category=share.category, date_from=first, date_to=last) }}">{{ share.category }}</a>
+          <span>{{ share.total_cents|rand }} · {{ share.percent_label }}</span>
+        </div>
+        <div class="bar" aria-hidden="true"><span style="width: {{ share.percent_label }}"></span></div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">No expenses recorded{% if selected_month %} in {{ selected_month|month_label }}{% endif %}.</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="card" aria-labelledby="recent-heading">
+  <div class="section-head">
+    <h2 id="recent-heading">Recent transactions</h2>
+    <a href="{{ url_for('main.transaction_list') }}">View all</a>
+  </div>
+  {{ transaction_table(recent, next_url, actions=False) }}
+</section>
+{% endif %}
+{% endblock %}

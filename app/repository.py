@@ -83,12 +83,20 @@ def _build_where(type, category, date_from, date_to):
     return where, params
 
 
-def list_transactions(conn, *, type=None, category=None, date_from=None, date_to=None):
-    """Return matching transactions, newest first. Date bounds are inclusive."""
+def list_transactions(
+    conn, *, type=None, category=None, date_from=None, date_to=None, limit=None
+):
+    """Return matching transactions, newest first. Date bounds are inclusive.
+
+    `limit` (a whole number) caps how many rows come back, e.g. for a
+    "recent transactions" list.
+    """
     where, params = _build_where(type, category, date_from, date_to)
-    return conn.execute(
-        f"SELECT * FROM transactions{where} ORDER BY date DESC, id DESC", params
-    ).fetchall()
+    sql = f"SELECT * FROM transactions{where} ORDER BY date DESC, id DESC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    return conn.execute(sql, params).fetchall()
 
 
 def get_totals(conn, *, type=None, category=None, date_from=None, date_to=None):

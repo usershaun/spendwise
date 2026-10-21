@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Delete transaction{% endblock %}
+
+{% block content %}
+<h1>Delete this transaction?</h1>
+
+<section class="card" aria-labelledby="details-heading">
+  <h2 id="details-heading">Transaction details</h2>
+  <dl class="details">
+    <div><dt>Date</dt><dd>{{ transaction.date }}</dd></div>
+    <div><dt>Description</dt><dd>{{ transaction.description }}</dd></div>
+    <div><dt>Category</dt><dd>{{ transaction.category }}</dd></div>
+    <div><dt>Type</dt><dd>{{ transaction.type|capitalize }}</dd></div>
+    <div><dt>Amount</dt><dd>{{ transaction.amount_cents|rand }}</dd></div>
+  </dl>
+
+  <p class="notice notice-warning">This permanently removes the transaction and cannot be undone.</p>
+
+  <form method="post" class="form-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="next" value="{{ next_url }}">
+    <button type="submit" class="btn btn-danger">Yes, delete transaction</button>
+    <a class="btn" href="{{ next_url }}">Cancel</a>
+  </form>
+</section>
+{% endblock %}

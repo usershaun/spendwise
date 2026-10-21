@@ -69,6 +69,9 @@ def create_app(test_config=None):
     app = Flask(__name__, instance_relative_config=True)
     app.config.from_mapping(
         DATABASE=os.path.join(app.instance_path, "spendwise.sqlite"),
+        # The browser will not send the session cookie on requests started by
+        # other websites, which is an extra layer on top of the CSRF token.
+        SESSION_COOKIE_SAMESITE="Lax",
     )
     if test_config is not None:
         app.config.from_mapping(test_config)
@@ -80,4 +83,8 @@ def create_app(test_config=None):
 
     Path(app.config["DATABASE"]).parent.mkdir(parents=True, exist_ok=True)
     db.init_app(app)
+
+    from app import routes  # imported here to avoid a circular import
+
+    app.register_blueprint(routes.bp)
     return app

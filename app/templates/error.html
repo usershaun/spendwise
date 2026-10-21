@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} {{ name }}{% endblock %}
+
+{% block content %}
+<section class="empty-state" aria-labelledby="error-heading">
+  <h1 id="error-heading">{{ code }} · {{ name }}</h1>
+  <p>{{ message }}</p>
+  <p>
+    <a class="btn btn-primary" href="{{ url_for('main.dashboard') }}">Back to dashboard</a>
+    <a class="btn" href="{{ url_for('main.transaction_list') }}">View transactions</a>
+  </p>
+</section>
+{% endblock %}

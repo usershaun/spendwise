@@ -451,3 +451,115 @@ def test_category_breakdown_for_one_month(conn, add):
 def test_category_breakdown_rejects_an_invalid_month(conn):
     with pytest.raises(ValidationError):
         services.get_category_breakdown(conn, "2026-13")
+
+
+# --- categories depend on the transaction type -----------------------------
+
+
+def test_category_lists_do_not_overlap_and_combine_into_one():
+    assert not set(services.INCOME_CATEGORIES) & set(services.EXPENSE_CATEGORIES)
+    assert set(services.CATEGORIES) == set(services.INCOME_CATEGORIES) | set(
+        services.EXPENSE_CATEGORIES
+    )
+
+
+@pytest.mark.parametrize("category", services.INCOME_CATEGORIES)
+def test_income_categories_are_valid_for_income(category):
+    result = services.validate_transaction(valid_form(type="income", category=category))
+
+    assert result.ok
+
+
+@pytest.mark.parametrize("category", services.EXPENSE_CATEGORIES)
+def test_expense_categories_are_valid_for_expenses(category):
+    result = services.validate_transaction(valid_form(type="expense", category=category))
+
+    assert result.ok
+
+
+def test_income_category_is_rejected_for_an_expense():
+    result = services.validate_transaction(valid_form(type="expense", category="Salary"))
+
+    assert set(result.errors) == {"category"}
+    assert "expense category" in result.errors["category"]
+
+
+def test_expense_category_is_rejected_for_income():
+    result = services.validate_transaction(valid_form(type="income", category="Food"))
+
+    assert set(result.errors) == {"category"}
+    assert "income category" in result.errors["category"]
+
+
+def test_category_is_still_checked_when_the_type_is_invalid():
+    result = services.validate_transaction(valid_form(type="nope", category="Gambling"))
+
+    assert set(result.errors) == {"type", "category"}
+
+
+def test_filters_accept_any_listed_category_with_any_type():
+    # A mismatched combination simply matches nothing; it is not an error.
+    assert services.validate_filters({"type": "expense", "category": "Salary"}).ok
+
+
+# --- month helpers ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "month, label",
+    [("2026-01", "January 2026"), ("2026-03", "March 2026"), ("1999-12", "December 1999")],
+)
+def test_format_month(month, label):
+    assert services.format_month(month) == label
+
+
+@pytest.mark.parametrize(
+    "month, first, last",
+    [
+        ("2026-01", "2026-01-01", "2026-01-31"),
+        ("2026-02", "2026-02-01", "2026-02-28"),
+        ("2024-02", "2024-02-01", "2024-02-29"),  # leap year
+        ("2026-04", "2026-04-01", "2026-04-30"),
+    ],
+)
+def test_month_bounds(month, first, last):
+    assert services.month_bounds(month) == (first, last)
+
+
+def test_month_helpers_reject_invalid_months():
+    with pytest.raises(ValidationError):
+        services.format_month("2026-13")
+    with pytest.raises(ValidationError):
+        services.month_bounds("nonsense")
+
+
+def test_month_bounds_can_filter_a_whole_month(conn, add):
+    add(amount_cents=100, date="2026-02-28")
+    add(amount_cents=200, date="2026-03-01")
+    first, last = services.month_bounds("2026-02")
+
+    totals = services.get_totals(conn, date_from=first, date_to=last)
+
+    assert totals.expense_cents == 100
+
+
+# --- default month for the breakdown ---------------------------------------
+
+
+def test_default_breakdown_month_with_no_data():
+    assert services.default_breakdown_month([]) is None
+
+
+def test_default_breakdown_month_skips_months_without_expenses(conn, add):
+    add(amount_cents=100, type="expense", category="Food", date="2026-01-10")
+    add(amount_cents=5000, type="income", category="Salary", date="2026-02-10")
+    summaries = services.get_monthly_summary(conn)
+
+    assert services.default_breakdown_month(summaries) == "2026-01"
+
+
+def test_default_breakdown_month_falls_back_to_newest_month_if_no_expenses(conn, add):
+    add(amount_cents=5000, type="income", category="Salary", date="2026-02-10")
+    summaries = services.get_monthly_summary(conn)
+
+    assert services.default_breakdown_month(summaries) == "2026-02"

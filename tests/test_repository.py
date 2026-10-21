@@ -339,3 +339,32 @@ def test_failed_write_is_rolled_back(conn, add):
         add(amount_cents=0)
 
     assert [r["description"] for r in repository.list_transactions(conn)] == ["existing"]
+
+
+# --- limit -----------------------------------------------------------------
+
+
+def test_list_limit_returns_only_the_newest_rows(conn, add):
+    add(date="2026-01-01", description="oldest")
+    add(date="2026-02-01", description="middle")
+    add(date="2026-03-01", description="newest")
+
+    rows = repository.list_transactions(conn, limit=2)
+
+    assert [r["description"] for r in rows] == ["newest", "middle"]
+
+
+def test_list_limit_works_together_with_filters(conn, add):
+    add(type="income", category="Salary", date="2026-01-01")
+    add(type="expense", date="2026-02-01", description="a")
+    add(type="expense", date="2026-03-01", description="b")
+
+    rows = repository.list_transactions(conn, type="expense", limit=1)
+
+    assert [r["description"] for r in rows] == ["b"]
+
+
+def test_list_limit_larger_than_row_count_returns_everything(conn, add):
+    add()
+
+    assert len(repository.list_transactions(conn, limit=50)) == 1

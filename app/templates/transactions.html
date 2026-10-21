@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% from "_macros.html" import transaction_table, field_error, described, category_options %}
+{% block title %}Transactions{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Transactions</h1>
+  <a class="btn btn-primary" href="{{ url_for('main.new_transaction', next=next_url) }}">Add transaction</a>
+</div>
+
+<section class="card" aria-labelledby="filter-heading">
+  <h2 id="filter-heading">Filter</h2>
+  <form method="get" action="{{ url_for('main.transaction_list') }}" class="filters">
+    <div class="field">
+      <label for="type">Type</label>
+      <select id="type" name="type"{{ described(errors, 'type') }}>
+        <option value="">All types</option>
+        <option value="income"{% if form.get('type') == 'income' %} selected{% endif %}>Income</option>
+        <option value="expense"{% if form.get('type') == 'expense' %} selected{% endif %}>Expense</option>
+      </select>
+      {{ field_error(errors, 'type') }}
+    </div>
+
+    <div class="field">
+      <label for="category">Category</label>
+      <select id="category" name="category"{{ described(errors, 'category') }}>
+        {{ category_options(form.get('category', ''), income_categories, expense_categories, 'All categories') }}
+      </select>
+      {{ field_error(errors, 'category') }}
+    </div>
+
+    <div class="field">
+      <label for="date_from">From</label>
+      <input type="date" id="date_from" name="date_from" value="{{ form.get('date_from', '') }}"{{ described(errors, 'date_from') }}>
+      {{ field_error(errors, 'date_from') }}
+    </div>
+
+    <div class="field">
+      <label for="date_to">To</label>
+      <input type="date" id="date_to" name="date_to" value="{{ form.get('date_to', '') }}"{{ described(errors, 'date_to') }}>
+      {{ field_error(errors, 'date_to') }}
+    </div>
+
+    <div class="field field-actions">
+      <button type="submit" class="btn btn-primary">Apply filters</button>
+      <a class="btn" href="{{ url_for('main.transaction_list') }}">Clear filters</a>
+    </div>
+  </form>
+</section>
+
+{% if errors %}
+  <p class="notice notice-error" role="alert">Fix the filter problems above to see results.</p>
+{% else %}
+  {% if rows %}
+  <section class="card" aria-labelledby="results-heading">
+    <h2 id="results-heading">
+      {{ rows|length }} transaction{{ '' if rows|length == 1 else 's' }}{% if filters_active %} match your filters{% endif %}
+    </h2>
+    <dl class="mini-stats">
+      <div><dt>Income</dt><dd class="amount-income">{{ totals.income_cents|rand }}</dd></div>
+      <div><dt>Expenses</dt><dd class="amount-expense">{{ totals.expense_cents|rand }}</dd></div>
+      <div><dt>Net</dt><dd{% if totals.net_cents < 0 %} class="amount-expense"{% endif %}>{{ totals.net_cents|rand }}</dd></div>
+    </dl>
+    {{ transaction_table(rows, next_url) }}
+  </section>
+  {% elif filters_active %}
+  <section class="empty-state" aria-labelledby="empty-heading">
+    <h2 id="empty-heading">No transactions match these filters</h2>
+    <p>Try widening the date range or choosing a different type or category.</p>
+    <p><a class="btn" href="{{ url_for('main.transaction_list') }}">Clear filters</a></p>
+  </section>
+  {% else %}
+  <section class="empty-state" aria-labelledby="empty-heading">
+    <h2 id="empty-heading">No transactions yet</h2>
+    <p>Your income and expenses will be listed here once you add them.</p>
+    <p><a class="btn btn-primary" href="{{ url_for('main.new_transaction', next=next_url) }}">Add your first transaction</a></p>
+  </section>
+  {% endif %}
+{% endif %}
+{% endblock %}
