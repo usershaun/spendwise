@@ -350,7 +350,9 @@ p {
 
 .grid-2 {
   display: grid;
-  grid-template-columns: 1fr;
+  /* minmax(0, 1fr), not 1fr: otherwise a wide table stops the column shrinking
+     below the table's width and the whole page scrolls sideways on phones. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--gap);
 }
 
@@ -360,7 +362,7 @@ p {
 
 @media (min-width: 52rem) {
   .grid-2 {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     margin-bottom: var(--gap);
     align-items: start;
   }
